@@ -6,10 +6,10 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.2",
+    version: "1.0.3",
     name: "FMFTP Movies",
     description: "Stream movies directly from FMFTP BDIX Server",
-    resources: ["catalog", "meta", "stream"], // meta যোগ করা হয়েছে
+    resources: ["catalog", "meta", "stream"],
     types: ["movie"],
     catalogs: [
         {
@@ -22,6 +22,12 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
+
+// পোস্টার তৈরির সহজ ও নির্ভরযোগ্য ফংশন
+function getPosterUrl(movieName) {
+    // পোস্টারের ছবি দ্রুত লোড হওয়ার জন্য UI Avatars API
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(movieName)}&background=1e1e2e&color=ffffff&size=512&font-size=0.33&bold=true`;
+}
 
 // ১. ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
@@ -53,7 +59,7 @@ builder.defineCatalogHandler(async (args) => {
                             id: "fmftp_" + encodeURIComponent(fullPath),
                             type: "movie",
                             name: decodeURIComponent(cleanName),
-                            poster: `https://dummyimage.com/300x450/1a1a1a/ffffff.png&text=${encodeURIComponent(cleanName)}`
+                            poster: getPosterUrl(cleanName)
                         });
                     }
                 }
@@ -66,19 +72,19 @@ builder.defineCatalogHandler(async (args) => {
     }
 });
 
-// ২. মেটা হ্যান্ডলার (এই অংশটি নতুন যুক্ত করা হয়েছে, যা এরর সমাধান করবে)
+// ২. মেটা হ্যান্ডলার
 builder.defineMetaHandler(async (args) => {
     const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
     const pathParts = folderUrl.split("/").filter(Boolean);
-    const movieName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
+    const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
 
     return {
         meta: {
             id: args.id,
             type: "movie",
-            name: movieName,
-            poster: `https://dummyimage.com/300x450/1a1a1a/ffffff.png&text=${encodeURIComponent(movieName)}`,
-            description: "Direct stream from FMFTP BDIX server: " + movieName
+            name: rawName,
+            poster: getPosterUrl(rawName),
+            description: "Direct BDIX Stream from FMFTP: " + rawName
         }
     };
 });
