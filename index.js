@@ -6,9 +6,9 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.4",
+    version: "1.0.5",
     name: "FMFTP Movies",
-    description: "Stream movies directly from FMFTP BDIX Server with real posters",
+    description: "Stream movies directly from FMFTP BDIX Server",
     resources: ["catalog", "meta", "stream"],
     types: ["movie"],
     catalogs: [
@@ -23,91 +23,73 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
-// মুভির নাম পরিষ্কার করার ফংশন (যেমন: 'Dhamaal 4 (2026)' -> 'Dhamaal 4')
-function cleanMovieName(rawName) {
-    return rawName
-        .replace(/\/\s*$/, '')
-        .replace(/\(\d{4}\)/, '') // সাল বাদ দেয়া
-        .replace(/\[.*?\]/g, '')
-        .trim();
+// নাম ক্লিন করার ফংশন
+function cleanName(raw) {
+    return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").trim();
 }
 
-// Cinemeta / TMDB থেকে ফ্রি আসল পোস্টার নিয়ে আসার ফংশন
-async function fetchRealPoster(cleanName) {
-    try {
-        const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(cleanName)}.json`;
-        const res = await axios.get(searchUrl, { timeout: 3000 });
-        if (res.data && res.data.metas && res.data.metas.length > 0) {
-            return res.data.metas[0].poster; // আসল অফিশিয়াল সিনেমার পোস্টার
-        }
-    } catch (err) {
-        // এরর হলে ফলব্যাক পোস্টার
-    }
-    return `https://via.placeholder.com/300x450/1e1e2e/ffffff.png?text=${encodeURIComponent(cleanName)}`;
-}
-
-// ১. ক্যাটালগ হ্যান্ডলার
-builder.defineCatalogHandler(async (args) => {
+// ১. ক্যাটালগ হ্যান্ডলার (একদম দ্রুত লোড হবে)
+builder.defineCatalogHandler(async () => {
     let allMovies = [];
 
     try {
         for (const cat of categories) {
             const catUrl = BASE_URL + cat;
-            const response = await axios.get(catUrl);
+            const response = await axios.get(catUrl, { timeout: 5000 });
             const $ = cheerio.load(response.data);
-
-            const moviePromises = [];
 
             $("a").each((i, element) => {
                 const folderName = $(element).text().trim();
                 const folderHref = $(element).attr("href");
 
                 if (folderHref) {
-                    const rawName = folderName.replace(/\//g, "").trim();
+                    const nameClean = folderName.replace(/\//g, "").trim();
 
                     if (
-                        rawName && 
-                        rawName !== ".." && 
-                        rawName !== "." && 
+                        nameClean && 
+                        nameClean !== ".." && 
+                        nameClean !== "." && 
                         !folderHref.startsWith("?") && 
                         !folderHref.startsWith("/")
                     ) {
                         const fullPath = catUrl + folderHref;
-                        const cleanedName = cleanMovieName(rawName);
+                        const displayTitle = cleanName(nameClean);
 
-                        // প্রতিটি মুভির জন্য অফিশিয়াল পোস্টার খোঁজার প্রসেস
-                        const p = fetchRealPoster(cleanedName).then((posterUrl) => {
-                            return {
-                                id: "fmftp_" + encodeURIComponent(fullPath),
-                                type: "movie",
-                                name: rawName,
-                                poster: posterUrl
-                            };
+                        allMovies.push({
+                            id: "fmftp_" + encodeURIComponent(fullPath),
+                            type: "movie",
+                            name: nameClean,
+                            // দ্রুত লোড হওয়ার জন্য লাইটওয়েট কার্ড
+                            poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayTitle)}&background=181825&color=cdd6f4&size=256&bold=true`
                         });
-
-                        moviePromises.push(p);
                     }
                 }
             });
-
-            const moviesInCat = await Promise.all(moviePromises);
-            allMovies = allMovies.concat(moviesInCat);
         }
         return { metas: allMovies };
     } catch (error) {
-        console.error("Error fetching catalog:", error);
+        console.error("Error fetching catalog:", error.message);
         return { metas: [] };
     }
 });
 
-// ২. মেটা হ্যান্ডলার
+// ২. মেটা হ্যান্ডলার (শুধু একটি মুভিতে ক্লিক করলে পোস্টার ও বিস্তারিত আনবে)
 builder.defineMetaHandler(async (args) => {
     const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
     const pathParts = folderUrl.split("/").filter(Boolean);
     const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
-    const cleanedName = cleanMovieName(rawName);
+    const cleaned = cleanName(rawName);
 
-    const posterUrl = await fetchRealPoster(cleanedName);
+    let posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=181825&color=cdd6f4&size=512&bold=true`;
+
+    try {
+        // ক্লিক করার পর Cinemeta থেকে অফিশিয়াল পোস্টার খোঁজা
+        const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(cleaned)}.json`;
+        const res = await axios.get(searchUrl, { timeout: 3000 });
+        if (res.data && res.data.metas && res.data.metas.length > 0) {
+            posterUrl = res.data.metas[0].poster;
+        }
+    } catch (e) {}
 
     return {
         meta: {
@@ -115,7 +97,7 @@ builder.defineMetaHandler(async (args) => {
             type: "movie",
             name: rawName,
             poster: posterUrl,
-            description: "Direct BDIX Stream from FMFTP Server"
+            description: "Direct BDIX Stream from FMFTP Server: " + rawName
         }
     };
 });
@@ -124,7 +106,7 @@ builder.defineMetaHandler(async (args) => {
 builder.defineStreamHandler(async (args) => {
     try {
         const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
-        const response = await axios.get(folderUrl);
+        const response = await axios.get(folderUrl, { timeout: 5000 });
         const $ = cheerio.load(response.data);
         let videoLink = "";
 
@@ -146,7 +128,7 @@ builder.defineStreamHandler(async (args) => {
             };
         }
     } catch (error) {
-        console.error("Error fetching stream:", error);
+        console.error("Error fetching stream:", error.message);
     }
 
     return { streams: [] };
