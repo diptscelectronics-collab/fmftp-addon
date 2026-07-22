@@ -6,9 +6,9 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.3",
+    version: "1.0.4",
     name: "FMFTP Movies",
-    description: "Stream movies directly from FMFTP BDIX Server",
+    description: "Stream movies directly from FMFTP BDIX Server with real posters",
     resources: ["catalog", "meta", "stream"],
     types: ["movie"],
     catalogs: [
@@ -23,10 +23,27 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
-// পোস্টার তৈরির সহজ ও নির্ভরযোগ্য ফংশন
-function getPosterUrl(movieName) {
-    // পোস্টারের ছবি দ্রুত লোড হওয়ার জন্য UI Avatars API
-    return `https://ui-avatars.com/api/?name=${encodeURIComponent(movieName)}&background=1e1e2e&color=ffffff&size=512&font-size=0.33&bold=true`;
+// মুভির নাম পরিষ্কার করার ফংশন (যেমন: 'Dhamaal 4 (2026)' -> 'Dhamaal 4')
+function cleanMovieName(rawName) {
+    return rawName
+        .replace(/\/\s*$/, '')
+        .replace(/\(\d{4}\)/, '') // সাল বাদ দেয়া
+        .replace(/\[.*?\]/g, '')
+        .trim();
+}
+
+// Cinemeta / TMDB থেকে ফ্রি আসল পোস্টার নিয়ে আসার ফংশন
+async function fetchRealPoster(cleanName) {
+    try {
+        const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(cleanName)}.json`;
+        const res = await axios.get(searchUrl, { timeout: 3000 });
+        if (res.data && res.data.metas && res.data.metas.length > 0) {
+            return res.data.metas[0].poster; // আসল অফিশিয়াল সিনেমার পোস্টার
+        }
+    } catch (err) {
+        // এরর হলে ফলব্যাক পোস্টার
+    }
+    return `https://via.placeholder.com/300x450/1e1e2e/ffffff.png?text=${encodeURIComponent(cleanName)}`;
 }
 
 // ১. ক্যাটালগ হ্যান্ডলার
@@ -39,31 +56,42 @@ builder.defineCatalogHandler(async (args) => {
             const response = await axios.get(catUrl);
             const $ = cheerio.load(response.data);
 
+            const moviePromises = [];
+
             $("a").each((i, element) => {
                 const folderName = $(element).text().trim();
                 const folderHref = $(element).attr("href");
 
                 if (folderHref) {
-                    const cleanName = folderName.replace(/\//g, "").trim();
+                    const rawName = folderName.replace(/\//g, "").trim();
 
                     if (
-                        cleanName && 
-                        cleanName !== ".." && 
-                        cleanName !== "." && 
+                        rawName && 
+                        rawName !== ".." && 
+                        rawName !== "." && 
                         !folderHref.startsWith("?") && 
                         !folderHref.startsWith("/")
                     ) {
                         const fullPath = catUrl + folderHref;
+                        const cleanedName = cleanMovieName(rawName);
 
-                        allMovies.push({
-                            id: "fmftp_" + encodeURIComponent(fullPath),
-                            type: "movie",
-                            name: decodeURIComponent(cleanName),
-                            poster: getPosterUrl(cleanName)
+                        // প্রতিটি মুভির জন্য অফিশিয়াল পোস্টার খোঁজার প্রসেস
+                        const p = fetchRealPoster(cleanedName).then((posterUrl) => {
+                            return {
+                                id: "fmftp_" + encodeURIComponent(fullPath),
+                                type: "movie",
+                                name: rawName,
+                                poster: posterUrl
+                            };
                         });
+
+                        moviePromises.push(p);
                     }
                 }
             });
+
+            const moviesInCat = await Promise.all(moviePromises);
+            allMovies = allMovies.concat(moviesInCat);
         }
         return { metas: allMovies };
     } catch (error) {
@@ -77,14 +105,17 @@ builder.defineMetaHandler(async (args) => {
     const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
     const pathParts = folderUrl.split("/").filter(Boolean);
     const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
+    const cleanedName = cleanMovieName(rawName);
+
+    const posterUrl = await fetchRealPoster(cleanedName);
 
     return {
         meta: {
             id: args.id,
             type: "movie",
             name: rawName,
-            poster: getPosterUrl(rawName),
-            description: "Direct BDIX Stream from FMFTP: " + rawName
+            poster: posterUrl,
+            description: "Direct BDIX Stream from FMFTP Server"
         }
     };
 });
