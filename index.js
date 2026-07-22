@@ -6,9 +6,9 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.1.0",
+    version: "1.1.1",
     name: "FMFTP Movies",
-    description: "Stream movies directly from FMFTP with Real Posters",
+    description: "Fast BDIX Movie Streaming Addon",
     resources: ["catalog", "meta", "stream"],
     types: ["movie"],
     catalogs: [
@@ -27,21 +27,19 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
-let movieCache = [];
+// মেমোরি ক্যাশ (মেটাডাটা ও পোস্টার সাথে সাথে পাওয়ার জন্য)
+const movieMap = new Map();
 let lastCacheTime = 0;
 
-// URL-safe Base64 Helper Functions (404 Error চিরতরে বন্ধ করার জন্য)
+// URL Safe Base64 Helpers
 function encodeId(url) {
-    return "fmftp_" + Buffer.from(url).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return "fmftp_" + Buffer.from(url).toString("base64url");
 }
 
 function decodeId(id) {
     try {
-        let base64 = id.replace(/^fmftp_/, "").replace(/-/g, "+").replace(/_/g, "/");
-        while (base64.length % 4 !== 0) {
-            base64 += "=";
-        }
-        return Buffer.from(base64, "base64").toString("utf-8");
+        const b64 = id.replace(/^fmftp_/, "");
+        return Buffer.from(b64, "base64url").toString("utf-8");
     } catch (e) {
         return "";
     }
@@ -52,8 +50,8 @@ function cleanName(raw) {
 }
 
 async function loadMovies() {
-    if (movieCache.length > 0 && (Date.now() - lastCacheTime < 3600000)) {
-        return movieCache;
+    if (movieMap.size > 0 && (Date.now() - lastCacheTime < 3600000)) {
+        return Array.from(movieMap.values());
     }
     
     let all = [];
@@ -71,21 +69,28 @@ async function loadMovies() {
                     const nameClean = folderName.replace(/\//g, "").trim();
                     if (nameClean && nameClean !== ".." && nameClean !== "." && !folderHref.startsWith("?") && !folderHref.startsWith("/")) {
                         const fullUrl = catUrl + folderHref;
-                        all.push({
-                            id: encodeId(fullUrl),
+                        const id = encodeId(fullUrl);
+                        const cleanTitle = cleanName(nameClean);
+                        
+                        const item = {
+                            id: id,
+                            fullUrl: fullUrl,
                             rawName: nameClean,
-                            cleanTitle: cleanName(nameClean)
-                        });
+                            cleanTitle: cleanTitle,
+                            poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(cleanTitle)}&background=181825&color=cdd6f4&size=512&bold=true`
+                        };
+                        
+                        movieMap.set(id, item);
+                        all.push(item);
                     }
                 }
             });
         }
-        movieCache = all;
         lastCacheTime = Date.now();
     } catch (e) {
         console.error("FTP Fetch Error:", e.message);
     }
-    return movieCache;
+    return Array.from(movieMap.values());
 }
 
 // ১. ক্যাটালগ হ্যান্ডলার
@@ -101,62 +106,57 @@ builder.defineCatalogHandler(async (args) => {
     const limit = 30; 
     const paginatedList = list.slice(skip, skip + limit);
 
+    // পোস্টার ব্যাকগ্রাউন্ডে ক্যাশ করে রাখা
     const metas = await Promise.all(paginatedList.map(async (m) => {
-        let posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(m.cleanTitle)}&background=181825&color=cdd6f4&size=512&bold=true`;
-        
-        try {
-            const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(m.cleanTitle)}.json`;
-            const res = await axios.get(searchUrl, { timeout: 1500 });
-            if (res.data && res.data.metas && res.data.metas.length > 0) {
-                posterUrl = res.data.metas[0].poster;
-            }
-        } catch (err) {}
+        if (!m.poster.includes("cinemeta")) {
+            try {
+                const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(m.cleanTitle)}.json`;
+                const res = await axios.get(searchUrl, { timeout: 1500 });
+                if (res.data && res.data.metas && res.data.metas.length > 0) {
+                    m.poster = res.data.metas[0].poster;
+                    movieMap.set(m.id, m);
+                }
+            } catch (err) {}
+        }
 
         return {
             id: m.id,
             type: "movie",
             name: m.cleanTitle,
-            poster: posterUrl
+            poster: m.poster
         };
     }));
 
     return { metas: metas };
 });
 
-// ২. মেটা হ্যান্ডলার (Base64 ডিকোড সহ শতভাগ ফেইল-সেফ)
+// ২. মেটা হ্যান্ডলার (জিরো-লেটেন্সি, ১ মিলি-সেকেন্ডে রেসপন্স করবে)
 builder.defineMetaHandler(async (args) => {
-    const folderUrl = decodeId(args.id);
-    const pathParts = folderUrl.split("/").filter(Boolean);
-    const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
-    const cleaned = cleanName(rawName);
-
-    let posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=181825&color=cdd6f4&size=512&bold=true`;
-    let description = `Direct High-Speed BDIX Stream from FMFTP Server.\n\nMovie Name: ${cleaned}`;
-    let backgroundUrl = posterUrl;
-    let releaseYear = "N/A";
-
-    try {
-        const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(cleaned)}.json`;
-        const res = await axios.get(searchUrl, { timeout: 1500 });
-        if (res.data && res.data.metas && res.data.metas.length > 0) {
-            const metaData = res.data.metas[0];
-            posterUrl = metaData.poster || posterUrl;
-            backgroundUrl = metaData.background || backgroundUrl;
-            description = metaData.description || description;
-            releaseYear = metaData.year || releaseYear;
-        }
-    } catch (e) {}
+    let item = movieMap.get(args.id);
+    
+    let title = "Movie";
+    let poster = "";
+    
+    if (item) {
+        title = item.cleanTitle;
+        poster = item.poster;
+    } else {
+        const folderUrl = decodeId(args.id);
+        const pathParts = folderUrl.split("/").filter(Boolean);
+        const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
+        title = cleanName(rawName);
+        poster = `https://ui-avatars.com/api/?name=${encodeURIComponent(title)}&background=181825&color=cdd6f4&size=512&bold=true`;
+    }
 
     return {
         meta: {
             id: args.id,
             type: "movie",
-            name: cleaned,
+            name: title,
             genres: ["BDIX Stream", "Movies"],
-            poster: posterUrl,
-            background: backgroundUrl,
-            description: description,
-            releaseInfo: releaseYear
+            poster: poster,
+            background: poster,
+            description: `Direct High-Speed BDIX Stream from FMFTP Server.\n\nMovie Name: ${title}`
         }
     };
 });
@@ -164,7 +164,8 @@ builder.defineMetaHandler(async (args) => {
 // ৩. স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
-        const folderUrl = decodeId(args.id);
+        const item = movieMap.get(args.id);
+        const folderUrl = item ? item.fullUrl : decodeId(args.id);
         if (!folderUrl) return { streams: [] };
 
         const response = await axios.get(folderUrl, { timeout: 10000 });
