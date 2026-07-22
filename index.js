@@ -6,11 +6,13 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.1.1",
+    version: "1.1.2",
     name: "FMFTP Movies",
     description: "Fast BDIX Movie Streaming Addon",
     resources: ["catalog", "meta", "stream"],
     types: ["movie"],
+    // এটি যোগ করায় Stremio বুঝতে পারবে এই আইডিগুলো আমাদের অ্যাডঅনের
+    idPrefixes: ["fmftp_"], 
     catalogs: [
         {
             type: "movie",
@@ -27,11 +29,10 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
-// মেমোরি ক্যাশ (মেটাডাটা ও পোস্টার সাথে সাথে পাওয়ার জন্য)
 const movieMap = new Map();
 let lastCacheTime = 0;
 
-// URL Safe Base64 Helpers
+// URL-Safe Base64 Helpers
 function encodeId(url) {
     return "fmftp_" + Buffer.from(url).toString("base64url");
 }
@@ -90,7 +91,7 @@ async function loadMovies() {
     } catch (e) {
         console.error("FTP Fetch Error:", e.message);
     }
-    return Array.from(movieMap.values());
+    return Array.from(movieMap.size ? movieMap.values() : []);
 }
 
 // ১. ক্যাটালগ হ্যান্ডলার
@@ -106,12 +107,11 @@ builder.defineCatalogHandler(async (args) => {
     const limit = 30; 
     const paginatedList = list.slice(skip, skip + limit);
 
-    // পোস্টার ব্যাকগ্রাউন্ডে ক্যাশ করে রাখা
     const metas = await Promise.all(paginatedList.map(async (m) => {
         if (!m.poster.includes("cinemeta")) {
             try {
                 const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(m.cleanTitle)}.json`;
-                const res = await axios.get(searchUrl, { timeout: 1500 });
+                const res = await axios.get(searchUrl, { timeout: 1200 });
                 if (res.data && res.data.metas && res.data.metas.length > 0) {
                     m.poster = res.data.metas[0].poster;
                     movieMap.set(m.id, m);
@@ -123,14 +123,15 @@ builder.defineCatalogHandler(async (args) => {
             id: m.id,
             type: "movie",
             name: m.cleanTitle,
-            poster: m.poster
+            poster: m.poster,
+            posterShape: "poster"
         };
     }));
 
     return { metas: metas };
 });
 
-// ২. মেটা হ্যান্ডলার (জিরো-লেটেন্সি, ১ মিলি-সেকেন্ডে রেসপন্স করবে)
+// ২. মেটা হ্যান্ডলার (Stremio-Strict Meta Schema)
 builder.defineMetaHandler(async (args) => {
     let item = movieMap.get(args.id);
     
@@ -155,8 +156,9 @@ builder.defineMetaHandler(async (args) => {
             name: title,
             genres: ["BDIX Stream", "Movies"],
             poster: poster,
+            posterShape: "poster",
             background: poster,
-            description: `Direct High-Speed BDIX Stream from FMFTP Server.\n\nMovie Name: ${title}`
+            description: `Direct High-Speed BDIX Stream from FMFTP Server.\n\nMovie Title: ${title}`
         }
     };
 });
