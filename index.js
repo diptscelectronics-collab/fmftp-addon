@@ -6,7 +6,7 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.9",
+    version: "1.1.0",
     name: "FMFTP Movies",
     description: "Stream movies directly from FMFTP with Real Posters",
     resources: ["catalog", "meta", "stream"],
@@ -29,6 +29,23 @@ const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
 let movieCache = [];
 let lastCacheTime = 0;
+
+// URL-safe Base64 Helper Functions (404 Error চিরতরে বন্ধ করার জন্য)
+function encodeId(url) {
+    return "fmftp_" + Buffer.from(url).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeId(id) {
+    try {
+        let base64 = id.replace(/^fmftp_/, "").replace(/-/g, "+").replace(/_/g, "/");
+        while (base64.length % 4 !== 0) {
+            base64 += "=";
+        }
+        return Buffer.from(base64, "base64").toString("utf-8");
+    } catch (e) {
+        return "";
+    }
+}
 
 function cleanName(raw) {
     return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").replace(/\[.*?\]/g, "").trim();
@@ -53,8 +70,9 @@ async function loadMovies() {
                 if (folderHref) {
                     const nameClean = folderName.replace(/\//g, "").trim();
                     if (nameClean && nameClean !== ".." && nameClean !== "." && !folderHref.startsWith("?") && !folderHref.startsWith("/")) {
+                        const fullUrl = catUrl + folderHref;
                         all.push({
-                            id: "fmftp_" + encodeURIComponent(catUrl + folderHref),
+                            id: encodeId(fullUrl),
                             rawName: nameClean,
                             cleanTitle: cleanName(nameClean)
                         });
@@ -88,7 +106,7 @@ builder.defineCatalogHandler(async (args) => {
         
         try {
             const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(m.cleanTitle)}.json`;
-            const res = await axios.get(searchUrl, { timeout: 2000 });
+            const res = await axios.get(searchUrl, { timeout: 1500 });
             if (res.data && res.data.metas && res.data.metas.length > 0) {
                 posterUrl = res.data.metas[0].poster;
             }
@@ -105,27 +123,19 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: metas };
 });
 
-// ২. মেটা হ্যান্ডলার (Bulletproof - কোনোভাবেই আর ফেইল করবে না)
+// ২. মেটা হ্যান্ডলার (Base64 ডিকোড সহ শতভাগ ফেইল-সেফ)
 builder.defineMetaHandler(async (args) => {
-    let folderUrl = "";
-    try {
-        folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
-    } catch(e) {
-        folderUrl = "Unknown";
-    }
-
+    const folderUrl = decodeId(args.id);
     const pathParts = folderUrl.split("/").filter(Boolean);
     const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
     const cleaned = cleanName(rawName);
 
-    // ডিফল্ট ডাটা রেডি রাখা হচ্ছে
     let posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=181825&color=cdd6f4&size=512&bold=true`;
-    let description = `Direct BDIX Stream from FMFTP Server.\n\nEnjoy bufferless streaming for: ${cleaned}`;
-    let backgroundUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=181825&color=cdd6f4&size=1024&bold=true`;
+    let description = `Direct High-Speed BDIX Stream from FMFTP Server.\n\nMovie Name: ${cleaned}`;
+    let backgroundUrl = posterUrl;
     let releaseYear = "N/A";
 
     try {
-        // চেষ্টা করবে আসল পোস্টার/ব্যাকগ্রাউন্ড আনার
         const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(cleaned)}.json`;
         const res = await axios.get(searchUrl, { timeout: 1500 });
         if (res.data && res.data.metas && res.data.metas.length > 0) {
@@ -135,11 +145,8 @@ builder.defineMetaHandler(async (args) => {
             description = metaData.description || description;
             releaseYear = metaData.year || releaseYear;
         }
-    } catch (e) {
-        // টাইমআউট বা ফেইল হলে কিছুই করবে না, শুধু ডিফল্ট ডাটা পাঠিয়ে দেবে
-    }
+    } catch (e) {}
 
-    // সবসময় একটি ভ্যালিড মেটা অবজেক্ট রিটার্ন করবে, ফলে বিড়াল আর আসবে না!
     return {
         meta: {
             id: args.id,
@@ -157,7 +164,9 @@ builder.defineMetaHandler(async (args) => {
 // ৩. স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
-        const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
+        const folderUrl = decodeId(args.id);
+        if (!folderUrl) return { streams: [] };
+
         const response = await axios.get(folderUrl, { timeout: 10000 });
         const $ = cheerio.load(response.data);
         let videoLink = "";
