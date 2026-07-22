@@ -6,10 +6,10 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.1",
+    version: "1.0.2",
     name: "FMFTP Movies",
     description: "Stream movies directly from FMFTP BDIX Server",
-    resources: ["catalog", "stream"],
+    resources: ["catalog", "meta", "stream"], // meta যোগ করা হয়েছে
     types: ["movie"],
     catalogs: [
         {
@@ -23,6 +23,7 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
+// ১. ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
     let allMovies = [];
 
@@ -39,7 +40,6 @@ builder.defineCatalogHandler(async (args) => {
                 if (folderHref) {
                     const cleanName = folderName.replace(/\//g, "").trim();
 
-                    // '..' বা অনাকাঙ্ক্ষিত লিঙ্ক এড়িয়ে চলার লজিক
                     if (
                         cleanName && 
                         cleanName !== ".." && 
@@ -53,7 +53,6 @@ builder.defineCatalogHandler(async (args) => {
                             id: "fmftp_" + encodeURIComponent(fullPath),
                             type: "movie",
                             name: decodeURIComponent(cleanName),
-                            // পোস্টারের জন্য একটি ক্লিন ইমেজ কার্ড
                             poster: `https://dummyimage.com/300x450/1a1a1a/ffffff.png&text=${encodeURIComponent(cleanName)}`
                         });
                     }
@@ -67,6 +66,24 @@ builder.defineCatalogHandler(async (args) => {
     }
 });
 
+// ২. মেটা হ্যান্ডলার (এই অংশটি নতুন যুক্ত করা হয়েছে, যা এরর সমাধান করবে)
+builder.defineMetaHandler(async (args) => {
+    const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
+    const pathParts = folderUrl.split("/").filter(Boolean);
+    const movieName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
+
+    return {
+        meta: {
+            id: args.id,
+            type: "movie",
+            name: movieName,
+            poster: `https://dummyimage.com/300x450/1a1a1a/ffffff.png&text=${encodeURIComponent(movieName)}`,
+            description: "Direct stream from FMFTP BDIX server: " + movieName
+        }
+    };
+});
+
+// ৩. স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
         const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
@@ -85,7 +102,7 @@ builder.defineStreamHandler(async (args) => {
             return {
                 streams: [
                     {
-                        title: "FMFTP Direct Stream (BDIX)",
+                        title: "FMFTP Direct BDIX Stream",
                         url: videoLink
                     }
                 ]
