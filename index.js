@@ -4,10 +4,9 @@ const cheerio = require("cheerio");
 
 const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
-// অ্যাড-অনের পরিচিতি
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.0",
+    version: "1.0.1",
     name: "FMFTP Movies",
     description: "Stream movies directly from FMFTP BDIX Server",
     resources: ["catalog", "stream"],
@@ -24,7 +23,6 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
-// ক্যাটালগ হ্যান্ডলার (মুভির লিস্ট লোড করবে)
 builder.defineCatalogHandler(async (args) => {
     let allMovies = [];
 
@@ -38,16 +36,27 @@ builder.defineCatalogHandler(async (args) => {
                 const folderName = $(element).text().trim();
                 const folderHref = $(element).attr("href");
 
-                if (folderHref && !folderHref.startsWith("?") && !folderHref.startsWith("/")) {
-                    const cleanName = folderName.replace(/\//g, "");
-                    const fullPath = catUrl + folderHref;
+                if (folderHref) {
+                    const cleanName = folderName.replace(/\//g, "").trim();
 
-                    allMovies.push({
-                        id: "fmftp_" + encodeURIComponent(fullPath),
-                        type: "movie",
-                        name: decodeURIComponent(cleanName),
-                        poster: "https://via.placeholder.com/300x450.png?text=" + encodeURIComponent(cleanName)
-                    });
+                    // '..' বা অনাকাঙ্ক্ষিত লিঙ্ক এড়িয়ে চলার লজিক
+                    if (
+                        cleanName && 
+                        cleanName !== ".." && 
+                        cleanName !== "." && 
+                        !folderHref.startsWith("?") && 
+                        !folderHref.startsWith("/")
+                    ) {
+                        const fullPath = catUrl + folderHref;
+
+                        allMovies.push({
+                            id: "fmftp_" + encodeURIComponent(fullPath),
+                            type: "movie",
+                            name: decodeURIComponent(cleanName),
+                            // পোস্টারের জন্য একটি ক্লিন ইমেজ কার্ড
+                            poster: `https://dummyimage.com/300x450/1a1a1a/ffffff.png&text=${encodeURIComponent(cleanName)}`
+                        });
+                    }
                 }
             });
         }
@@ -58,7 +67,6 @@ builder.defineCatalogHandler(async (args) => {
     }
 });
 
-// স্ট্রিম হ্যান্ডলার (ভিডিও প্লে করার আসল লিঙ্ক তৈরি করবে)
 builder.defineStreamHandler(async (args) => {
     try {
         const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
@@ -90,5 +98,4 @@ builder.defineStreamHandler(async (args) => {
     return { streams: [] };
 });
 
-// সার্ভার পোর্ট সেটিংস
 serveHTTP(builder.getInterface(), { port: process.env.PORT || 7000 });
