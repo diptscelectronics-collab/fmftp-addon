@@ -6,7 +6,7 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.6",
+    version: "1.0.7",
     name: "FMFTP Movies",
     description: "Stream movies directly from FMFTP BDIX Server",
     resources: ["catalog", "meta", "stream"],
@@ -58,8 +58,8 @@ builder.defineCatalogHandler(async () => {
                         allMovies.push({
                             id: "fmftp_" + encodeURIComponent(fullPath),
                             type: "movie",
-                            name: nameClean,
-                            poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayTitle)}&background=181825&color=cdd6f4&size=512&bold=true`
+                            name: displayTitle,
+                            poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayTitle)}&background=1e1e2e&color=cdd6f4&size=512&bold=true`
                         });
                     }
                 }
@@ -72,24 +72,31 @@ builder.defineCatalogHandler(async () => {
     }
 });
 
-// ২. মেটা হ্যান্ডলার (কোনো এক্সটার্নাল ফেচ ছাড়া, ফলে কখনোই ফেইল করবে না)
+// ২. মেটা হ্যান্ডলার (স্ট্রিমিওর স্ট্যান্ডার্ড স্ট্রাকচার অনুযায়ী আপডেট করা)
 builder.defineMetaHandler(async (args) => {
-    const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
-    const pathParts = folderUrl.split("/").filter(Boolean);
-    const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
-    const cleaned = cleanName(rawName);
+    try {
+        const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
+        const pathParts = folderUrl.split("/").filter(Boolean);
+        const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
+        const cleaned = cleanName(rawName);
 
-    const posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=181825&color=cdd6f4&size=512&bold=true`;
+        const posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=1e1e2e&color=cdd6f4&size=512&bold=true`;
 
-    return {
-        meta: {
-            id: args.id,
-            type: "movie",
-            name: rawName,
-            poster: posterUrl,
-            description: "Direct BDIX Stream from FMFTP Server for: " + rawName
-        }
-    };
+        return {
+            meta: {
+                id: args.id,
+                type: "movie",
+                name: cleaned,
+                genres: ["BDIX Stream", "Movies"],
+                poster: posterUrl,
+                background: posterUrl,
+                description: `Direct BDIX High-Speed Stream from FMFTP Server. Movie: ${cleaned}`
+            }
+        };
+    } catch (e) {
+        console.error("Meta error:", e.message);
+        return { meta: null };
+    }
 });
 
 // ৩. স্ট্রিম হ্যান্ডলার
