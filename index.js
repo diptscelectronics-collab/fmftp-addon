@@ -6,16 +6,21 @@ const BASE_URL = "https://fmftp.net/data/disk-1/movies/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.0.7",
+    version: "1.0.8",
     name: "FMFTP Movies",
-    description: "Stream movies directly from FMFTP BDIX Server",
+    description: "Stream movies directly from FMFTP with Real Posters",
     resources: ["catalog", "meta", "stream"],
     types: ["movie"],
     catalogs: [
         {
             type: "movie",
             id: "fmftp_all_movies",
-            name: "FMFTP Movies"
+            name: "FMFTP Movies",
+            // পেজিনেশন এবং সার্চ অপশন চালু করা হলো
+            extra: [
+                { name: "skip", isRequired: false },
+                { name: "search", isRequired: false }
+            ]
         }
     ]
 };
@@ -23,19 +28,25 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 const categories = ["hindidub/", "bollywood/", "hollywood/"];
 
-// নাম ক্লিন করার ফংশন
+// সার্ভার ফাস্ট রাখার জন্য মেমোরি ক্যাশ
+let movieCache = [];
+let lastCacheTime = 0;
+
 function cleanName(raw) {
-    return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").trim();
+    return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").replace(/\[.*?\]/g, "").trim();
 }
 
-// ১. ক্যাটালগ হ্যান্ডলার
-builder.defineCatalogHandler(async () => {
-    let allMovies = [];
-
+// এফটিপি থেকে মুভির লিস্ট লোড করার ফাংশন
+async function loadMovies() {
+    if (movieCache.length > 0 && (Date.now() - lastCacheTime < 3600000)) {
+        return movieCache; // ১ ঘন্টার জন্য ক্যাশ করা থাকবে, তাই লোডিং হবে রকেটের মত ফাস্ট!
+    }
+    
+    let all = [];
     try {
         for (const cat of categories) {
             const catUrl = BASE_URL + cat;
-            const response = await axios.get(catUrl, { timeout: 10000 });
+            const response = await axios.get(catUrl, { timeout: 15000 });
             const $ = cheerio.load(response.data);
 
             $("a").each((i, element) => {
@@ -44,35 +55,63 @@ builder.defineCatalogHandler(async () => {
 
                 if (folderHref) {
                     const nameClean = folderName.replace(/\//g, "").trim();
-
-                    if (
-                        nameClean && 
-                        nameClean !== ".." && 
-                        nameClean !== "." && 
-                        !folderHref.startsWith("?") && 
-                        !folderHref.startsWith("/")
-                    ) {
-                        const fullPath = catUrl + folderHref;
-                        const displayTitle = cleanName(nameClean);
-
-                        allMovies.push({
-                            id: "fmftp_" + encodeURIComponent(fullPath),
-                            type: "movie",
-                            name: displayTitle,
-                            poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(displayTitle)}&background=1e1e2e&color=cdd6f4&size=512&bold=true`
+                    if (nameClean && nameClean !== ".." && nameClean !== "." && !folderHref.startsWith("?") && !folderHref.startsWith("/")) {
+                        all.push({
+                            id: "fmftp_" + encodeURIComponent(catUrl + folderHref),
+                            rawName: nameClean,
+                            cleanTitle: cleanName(nameClean)
                         });
                     }
                 }
             });
         }
-        return { metas: allMovies };
-    } catch (error) {
-        console.error("Error fetching catalog:", error.message);
-        return { metas: [] };
+        movieCache = all;
+        lastCacheTime = Date.now();
+    } catch (e) {
+        console.error("FTP Fetch Error:", e.message);
     }
+    return movieCache;
+}
+
+// ১. ক্যাটালগ হ্যান্ডলার (আসল পোস্টার ও পেজিনেশন সহ)
+builder.defineCatalogHandler(async (args) => {
+    let list = await loadMovies();
+
+    // যদি ইউজার সার্চ করে
+    if (args.extra && args.extra.search) {
+        const query = args.extra.search.toLowerCase();
+        list = list.filter(m => m.cleanTitle.toLowerCase().includes(query));
+    }
+
+    // পেজিনেশন: একবারে শুধুমাত্র ৩০টি মুভি লোড করবে
+    const skip = args.extra && args.extra.skip ? parseInt(args.extra.skip) : 0;
+    const limit = 30; 
+    const paginatedList = list.slice(skip, skip + limit);
+
+    // এই ৩০টি মুভির জন্য আসল পোস্টার ফেচ করবে
+    const metas = await Promise.all(paginatedList.map(async (m) => {
+        let posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(m.cleanTitle)}&background=181825&color=cdd6f4&size=512&bold=true`;
+        
+        try {
+            const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(m.cleanTitle)}.json`;
+            const res = await axios.get(searchUrl, { timeout: 2500 });
+            if (res.data && res.data.metas && res.data.metas.length > 0) {
+                posterUrl = res.data.metas[0].poster; // আসল পোস্টার পেয়ে গেলে সেটা বসিয়ে দিবে
+            }
+        } catch (err) {}
+
+        return {
+            id: m.id,
+            type: "movie",
+            name: m.cleanTitle,
+            poster: posterUrl
+        };
+    }));
+
+    return { metas: metas };
 });
 
-// ২. মেটা হ্যান্ডলার (স্ট্রিমিওর স্ট্যান্ডার্ড স্ট্রাকচার অনুযায়ী আপডেট করা)
+// ২. মেটা হ্যান্ডলার (ক্লিক করলে ডিটেইলস আনবে)
 builder.defineMetaHandler(async (args) => {
     try {
         const folderUrl = decodeURIComponent(args.id.replace("fmftp_", ""));
@@ -80,7 +119,24 @@ builder.defineMetaHandler(async (args) => {
         const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Movie");
         const cleaned = cleanName(rawName);
 
-        const posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=1e1e2e&color=cdd6f4&size=512&bold=true`;
+        let posterUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(cleaned)}&background=181825&color=cdd6f4&size=512&bold=true`;
+        let description = `Direct BDIX Stream from FMFTP Server. Movie: ${cleaned}`;
+        let backgroundUrl = posterUrl;
+        let imdbRating = null;
+        let releaseYear = null;
+
+        try {
+            const searchUrl = `https://v3-cinemeta.strem.io/catalog/movie/top/search=${encodeURIComponent(cleaned)}.json`;
+            const res = await axios.get(searchUrl, { timeout: 3000 });
+            if (res.data && res.data.metas && res.data.metas.length > 0) {
+                const metaData = res.data.metas[0];
+                posterUrl = metaData.poster || posterUrl;
+                backgroundUrl = metaData.background || backgroundUrl;
+                description = metaData.description || description;
+                imdbRating = metaData.imdbRating || null;
+                releaseYear = metaData.year || null;
+            }
+        } catch (e) {}
 
         return {
             meta: {
@@ -89,12 +145,13 @@ builder.defineMetaHandler(async (args) => {
                 name: cleaned,
                 genres: ["BDIX Stream", "Movies"],
                 poster: posterUrl,
-                background: posterUrl,
-                description: `Direct BDIX High-Speed Stream from FMFTP Server. Movie: ${cleaned}`
+                background: backgroundUrl,
+                description: description,
+                imdbRating: imdbRating,
+                releaseInfo: releaseYear
             }
         };
     } catch (e) {
-        console.error("Meta error:", e.message);
         return { meta: null };
     }
 });
@@ -109,7 +166,8 @@ builder.defineStreamHandler(async (args) => {
 
         $("a").each((i, element) => {
             const href = $(element).attr("href");
-            if (href && (href.endsWith(".mp4") || href.endsWith(".mkv"))) {
+            // mp4, mkv, avi সব ধরণের ফরম্যাট সাপোর্ট করবে
+            if (href && (href.match(/\.(mp4|mkv|avi|webm)$/i))) {
                 videoLink = folderUrl + href;
             }
         });
@@ -124,9 +182,7 @@ builder.defineStreamHandler(async (args) => {
                 ]
             };
         }
-    } catch (error) {
-        console.error("Error fetching stream:", error.message);
-    }
+    } catch (error) {}
 
     return { streams: [] };
 });
