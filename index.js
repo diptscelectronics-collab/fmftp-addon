@@ -7,7 +7,7 @@ const SERIES_BASE_URL = "https://fmftp.net/data/disk-1/tvseries/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.2.0",
+    version: "1.2.1",
     name: "FMFTP Movies & Series",
     description: "Fast BDIX Movie & TV Series Streaming Addon",
     resources: ["catalog", "meta", "stream"],
@@ -45,7 +45,6 @@ const seriesMap = new Map();
 let lastMovieCacheTime = 0;
 let lastSeriesCacheTime = 0;
 
-// URL-Safe Base64 Helpers
 function encodeId(url) {
     return "fmftp_" + Buffer.from(url).toString("base64url");
 }
@@ -63,7 +62,34 @@ function cleanName(raw) {
     return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").replace(/\[.*?\]/g, "").trim();
 }
 
-// ১. মুভি লোড ফাংশন
+// ভিডিও অবজেক্ট তৈরি করার দ্রুত হেলপার ফাংশন
+function buildVideoObject(fileUrl, fileName, defaultSeason, defaultEp) {
+    const cleanFileName = fileName.replace(/\.[^/.]+$/, "");
+    
+    // S01E02, 1x02 বা Episode চিহ্নিত করার লজিক
+    const sAndE = cleanFileName.match(/s(\d+)e(\d+)/i) || cleanFileName.match(/(\d+)x(\d+)/i);
+    let s = defaultSeason;
+    let e = defaultEp;
+
+    if (sAndE) {
+        s = parseInt(sAndE[1]);
+        e = parseInt(sAndE[2]);
+    } else {
+        const epOnly = cleanFileName.match(/e(?:pisode)?\s*(\d+)/i) || cleanFileName.match(/ep\s*(\d+)/i);
+        if (epOnly) {
+            e = parseInt(epOnly[1]);
+        }
+    }
+
+    return {
+        id: encodeId(fileUrl),
+        title: cleanFileName,
+        season: s,
+        episode: e,
+        released: new Date().toISOString()
+    };
+}
+
 async function loadMovies() {
     if (movieMap.size > 0 && (Date.now() - lastMovieCacheTime < 3600000)) {
         return Array.from(movieMap.values());
@@ -105,7 +131,6 @@ async function loadMovies() {
     return Array.from(movieMap.values());
 }
 
-// ২. টিভি সিরিজ লোড ফাংশন
 async function loadSeries() {
     if (seriesMap.size > 0 && (Date.now() - lastSeriesCacheTime < 3600000)) {
         return Array.from(seriesMap.values());
@@ -149,7 +174,7 @@ async function loadSeries() {
     return Array.from(seriesMap.values());
 }
 
-// ৩. ক্যাটালগ হ্যান্ডলার (Movies & Series)
+// ১. ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
     let list = args.type === "series" ? await loadSeries() : await loadMovies();
 
@@ -187,7 +212,7 @@ builder.defineCatalogHandler(async (args) => {
     return { metas: metas };
 });
 
-// ৪. মেটা হ্যান্ডলার (সিরিজের সিজন ও এপিসোড বের করার লজিক সহ)
+// ২. মেটা হ্যান্ডলার (হাইপার ফাস্ট প্যারালাল সিজন ফেচিং)
 builder.defineMetaHandler(async (args) => {
     const isSeries = args.type === "series";
     let item = isSeries ? seriesMap.get(args.id) : movieMap.get(args.id);
@@ -219,58 +244,57 @@ builder.defineMetaHandler(async (args) => {
         description: `Direct High-Speed BDIX Stream from FMFTP Server.\n\nTitle: ${title}`
     };
 
-    // যদি টিভি সিরিজ হয়, তাহলে ফোল্ডার স্ক্যান করে সব সিজন ও এপিসোড বের করা হবে
     if (isSeries && folderUrl) {
         const videos = [];
         try {
-            async function scanFolder(url, defaultSeason = 1) {
-                const res = await axios.get(url, { timeout: 8000 });
-                const $ = cheerio.load(res.data);
-                let epCount = 1;
+            const rootRes = await axios.get(folderUrl, { timeout: 3500 });
+            const $ = cheerio.load(rootRes.data);
+            
+            const subFolders = [];
+            let rootEpCount = 1;
 
-                const links = [];
-                $("a").each((i, el) => {
-                    const href = $(el).attr("href");
-                    const name = $(el).text().trim();
-                    if (href && name !== ".." && name !== "." && !href.startsWith("?") && !href.startsWith("/")) {
-                        links.push({ href: url + href, name: name });
-                    }
-                });
-
-                for (const link of links) {
-                    if (link.href.match(/\.(mp4|mkv|avi|webm)$/i)) {
-                        // S01E02 বা Episode সংখ্যা ডিটেক্ট করার লজিক
-                        const match = link.name.match(/s(\d+)e(\d+)/i) || link.name.match(/(\d+)x(\d+)/i);
-                        let s = defaultSeason;
-                        let e = epCount;
-
-                        if (match) {
-                            s = parseInt(match[1]);
-                            e = parseInt(match[2]);
-                        } else {
-                            const epMatch = link.name.match(/e(?:pisode)?\s*(\d+)/i);
-                            if (epMatch) e = parseInt(epMatch[1]);
-                        }
-
-                        videos.push({
-                            id: encodeId(link.href), // সরাসরি ভিডিও ফাইল লিংক এনকোড করা হলো
-                            title: link.name.replace(/\.[^/.]+$/, ""),
-                            season: s,
-                            episode: e,
-                            released: new Date().toISOString()
-                        });
-                        epCount++;
-                    } else if (link.href.endsWith("/")) {
-                        // সিজন ফোল্ডার থাকলে (যেমন: Season 1)
-                        const seasonMatch = link.name.match(/season\s*(\d+)/i) || link.name.match(/s(\d+)/i);
-                        const foundSeason = seasonMatch ? parseInt(seasonMatch[1]) : defaultSeason;
-                        await scanFolder(link.href, foundSeason);
+            $("a").each((i, el) => {
+                const href = $(el).attr("href");
+                const name = $(el).text().trim();
+                if (href && name !== ".." && name !== "." && !href.startsWith("?") && !href.startsWith("/")) {
+                    const fullHref = folderUrl.endsWith("/") ? folderUrl + href : folderUrl + "/" + href;
+                    
+                    if (href.match(/\.(mp4|mkv|avi|webm)$/i)) {
+                        videos.push(buildVideoObject(fullHref, name, 1, rootEpCount++));
+                    } else if (href.endsWith("/") || !href.includes(".")) {
+                        subFolders.push({ url: fullHref, name: name });
                     }
                 }
+            });
+
+            // সিজন ফোল্ডারগুলোকে একসাথে প্যারালালে লোড করা হবে
+            if (subFolders.length > 0) {
+                await Promise.all(subFolders.map(async (sf, sfIndex) => {
+                    try {
+                        const seasonMatch = sf.name.match(/season\s*(\d+)/i) || sf.name.match(/s(\d+)/i);
+                        const sNum = seasonMatch ? parseInt(seasonMatch[1]) : (sfIndex + 1);
+                        
+                        const subRes = await axios.get(sf.url, { timeout: 3500 });
+                        const $sub = cheerio.load(subRes.data);
+                        let subEpCount = 1;
+
+                        $sub("a").each((j, el2) => {
+                            const href2 = $sub(el2).attr("href");
+                            const name2 = $sub(el2).text().trim();
+                            if (href2 && name2 !== ".." && name2 !== "." && !href2.startsWith("?") && !href2.startsWith("/")) {
+                                const fullHref2 = sf.url.endsWith("/") ? sf.url + href2 : sf.url + "/" + href2;
+                                if (href2.match(/\.(mp4|mkv|avi|webm)$/i)) {
+                                    videos.push(buildVideoObject(fullHref2, name2, sNum, subEpCount++));
+                                }
+                            }
+                        });
+                    } catch (e) {}
+                }));
             }
 
-            await scanFolder(folderUrl);
             if (videos.length > 0) {
+                // সিজন এবং এপিসোড নম্বর অনুযায়ী সাজানো
+                videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
                 metaObj.videos = videos;
             }
         } catch (err) {
@@ -281,13 +305,13 @@ builder.defineMetaHandler(async (args) => {
     return { meta: metaObj };
 });
 
-// ৫. স্ট্রিম হ্যান্ডলার
+// ৩. স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
         const decodedUrl = decodeId(args.id);
         if (!decodedUrl) return { streams: [] };
 
-        // যদি সরাসরি ভিডিও ফাইলের লিংক হয় (টিভি সিরিজের জন্য)
+        // যদি সরাসরি ভিডিও ফাইল লিঙ্ক হয় (টিভি সিরিজ এপিসোডের জন্য)
         if (decodedUrl.match(/\.(mp4|mkv|avi|webm)$/i)) {
             return {
                 streams: [
@@ -299,7 +323,7 @@ builder.defineStreamHandler(async (args) => {
             };
         }
 
-        // যদি ফোল্ডারের লিংক হয় (মুভির জন্য)
+        // যদি ফোল্ডারের লিঙ্ক হয় (মুভির জন্য)
         const response = await axios.get(decodedUrl, { timeout: 10000 });
         const $ = cheerio.load(response.data);
         let videoLink = "";
