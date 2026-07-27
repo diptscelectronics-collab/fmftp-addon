@@ -7,7 +7,7 @@ const SERIES_BASE_URL = "https://fmftp.net/data/disk-1/tvseries/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.2.2",
+    version: "1.2.3",
     name: "FMFTP Movies & Series",
     description: "Fast BDIX Movie & TV Series Streaming Addon",
     resources: ["catalog", "meta", "stream"],
@@ -62,6 +62,19 @@ function cleanName(raw) {
     return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").replace(/\[.*?\]/g, "").trim();
 }
 
+// Cinemeta থেকে আসল পোস্টার ফেচ করার হেলপার ফাংশন
+async function fetchPosterFromCinemeta(title, type) {
+    try {
+        const searchUrl = `https://v3-cinemeta.strem.io/catalog/${type}/top/search=${encodeURIComponent(title)}.json`;
+        const res = await axios.get(searchUrl, { timeout: 2000 });
+        if (res.data && res.data.metas && res.data.metas.length > 0 && res.data.metas[0].poster) {
+            return res.data.metas[0].poster;
+        }
+    } catch (e) {}
+    // ফলব্যাক হিসেবে মেটা পোস্টার সার্ভিস ব্যবহার
+    return `https://v3-cinemeta.strem.io/poster/${type}/${encodeURIComponent(title)}.jpg`;
+}
+
 function buildVideoObject(fileUrl, fileName, defaultSeason, defaultEp) {
     const cleanFileName = fileName.replace(/\.[^/.]+$/, "");
     const sAndE = cleanFileName.match(/s(\d+)e(\d+)/i) || cleanFileName.match(/(\d+)x(\d+)/i);
@@ -100,6 +113,8 @@ async function loadMovies() {
                 const response = await axios.get(catUrl, { timeout: 15000 });
                 const $ = cheerio.load(response.data);
 
+                const itemsToFetch = [];
+
                 $("a").each((i, element) => {
                     const folderName = $(element).text().trim();
                     const folderHref = $(element).attr("href");
@@ -110,22 +125,27 @@ async function loadMovies() {
                             const fullUrl = catUrl + folderHref;
                             const id = encodeId(fullUrl);
                             const cleanTitle = cleanName(nameClean);
-                            
-                            const item = {
-                                id: id,
-                                fullUrl: fullUrl,
-                                cleanTitle: cleanTitle,
-                                type: "movie",
-                                poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(cleanTitle)}&background=181825&color=cdd6f4&size=512&bold=true`
-                            };
-                            movieMap.set(id, item);
+
+                            itemsToFetch.push({ id, fullUrl, cleanTitle });
                         }
                     }
                 });
+
+                // ব্যাকগ্রাউন্ডে Cinemeta পোস্টার সহ ম্যাপিং তৈরি
+                for (const item of itemsToFetch) {
+                    const poster = await fetchPosterFromCinemeta(item.cleanTitle, "movie");
+                    movieMap.set(item.id, {
+                        id: item.id,
+                        fullUrl: item.fullUrl,
+                        cleanTitle: item.cleanTitle,
+                        type: "movie",
+                        poster: poster
+                    });
+                }
             } catch (err) {}
         }
         lastMovieCacheTime = Date.now();
-        console.log(`Loaded ${movieMap.size} movies to cache.`);
+        console.log(`Loaded ${movieMap.size} movies with posters to cache.`);
     } catch (e) {
         console.error("Movie Fetch Error:", e.message);
     }
@@ -145,6 +165,8 @@ async function loadSeries() {
                 const response = await axios.get(catUrl, { timeout: 15000 });
                 const $ = cheerio.load(response.data);
 
+                const itemsToFetch = [];
+
                 $("a").each((i, element) => {
                     const folderName = $(element).text().trim();
                     const folderHref = $(element).attr("href");
@@ -155,31 +177,39 @@ async function loadSeries() {
                             const fullUrl = catUrl + folderHref;
                             const id = encodeId(fullUrl);
                             const cleanTitle = cleanName(nameClean);
-                            
-                            const item = {
-                                id: id,
-                                fullUrl: fullUrl,
-                                cleanTitle: cleanTitle,
-                                type: "series",
-                                poster: `https://ui-avatars.com/api/?name=${encodeURIComponent(cleanTitle)}&background=1e1e2e&color=a6e3a1&size=512&bold=true`
-                            };
-                            seriesMap.set(id, item);
+
+                            itemsToFetch.push({ id, fullUrl, cleanTitle });
                         }
                     }
                 });
+
+                for (const item of itemsToFetch) {
+                    const poster = await fetchPosterFromCinemeta(item.cleanTitle, "series");
+                    seriesMap.set(item.id, {
+                        id: item.id,
+                        fullUrl: item.fullUrl,
+                        cleanTitle: item.cleanTitle,
+                        type: "series",
+                        poster: poster
+                    });
+                }
             } catch (err) {}
         }
         lastSeriesCacheTime = Date.now();
-        console.log(`Loaded ${seriesMap.size} TV series to cache.`);
+        console.log(`Loaded ${seriesMap.size} TV series with posters to cache.`);
     } catch (e) {
         console.error("Series Fetch Error:", e.message);
     }
     return Array.from(seriesMap.values());
 }
 
-// ১. ক্যাটালগ হ্যান্ডলার (ইনস্ট্যান্ট সার্চ সাপোর্টের জন্য অপটিমাইজড)
+// ১. ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
-    let list = args.type === "series" ? await loadSeries() : await loadMovies();
+    let list = args.type === "series" ? Array.from(seriesMap.values()) : Array.from(movieMap.values());
+
+    if (list.length === 0) {
+        list = args.type === "series" ? await loadSeries() : await loadMovies();
+    }
 
     if (args.extra && args.extra.search) {
         const query = args.extra.search.toLowerCase().trim();
@@ -221,7 +251,7 @@ builder.defineMetaHandler(async (args) => {
         const pathParts = folderUrl.split("/").filter(Boolean);
         const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Item");
         title = cleanName(rawName);
-        poster = `https://ui-avatars.com/api/?name=${encodeURIComponent(title)}&background=181825&color=cdd6f4&size=512&bold=true`;
+        poster = await fetchPosterFromCinemeta(title, isSeries ? "series" : "movie");
     }
 
     const metaObj = {
@@ -343,6 +373,6 @@ serveHTTP(builder.getInterface(), { port: PORT });
 
 console.log(`Addon running at http://localhost:${PORT}/manifest.json`);
 
-// ব্যাকগ্রাউন্ডে ডাটা ইনডেক্স করা (ইনস্ট্যান্ট সার্চের জন্য)
+// ব্যাকগ্রাউন্ড ইনডেক্সিং শুরু
 loadMovies();
 loadSeries();
