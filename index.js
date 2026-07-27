@@ -7,7 +7,7 @@ const SERIES_BASE_URL = "https://fmftp.net/data/disk-1/tvseries/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.6.0",
+    version: "1.7.0",
     name: "FMFTP Movies & Series",
     description: "Fast BDIX Movie & TV Series Streaming Addon with Deep Folder Scraping",
     resources: ["catalog", "meta", "stream"],
@@ -38,7 +38,18 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 const movieCategories = ["hindidub/", "bollywood/", "hollywood/"];
-const seriesCategories = ["english/", "bangla/", "hindi/", "korean/", ""];
+
+// স্ক্রিনশটের সাথে মিলিয়ে ১০০% সঠিক টিভি সিরিজ ক্যাটাগরি লিস্ট
+const seriesCategories = [
+    "1/",
+    "Bangla/",
+    "English/",
+    "Indian/",
+    "Turkish/",
+    "abcd/",
+    "korean/",
+    "new/"
+];
 
 const movieMap = new Map();
 const seriesMap = new Map();
@@ -177,7 +188,7 @@ async function crawlSeriesFolder(catUrl, depth = 0) {
                         });
                     }
                 } 
-                // যদি সাব-ফোল্ডার হয় (এবং সেশন/Episode ফোল্ডার না হয়)
+                // যদি সাব-ফোল্ডার হয় (এবং সিজন/Episode ফোল্ডার না হয়)
                 else if (folderHref.endsWith("/") || !folderHref.includes(".")) {
                     const cleanSub = folderName.replace(/\//g, "").trim();
                     if (!cleanSub.match(/season\s*\d+/i) && !cleanSub.match(/^s\d+/i)) {
@@ -303,7 +314,7 @@ builder.defineMetaHandler(async (args) => {
     return { meta: metaObj };
 });
 
-// ৫. স্মার্ট স্ট্রিম হ্যান্ডলার (IMDB ID / Cinemeta Search & Custom ID Resolution)
+// ৫. স্মার্ট স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
         let streamUrl = "";
@@ -355,7 +366,7 @@ builder.defineStreamHandler(async (args) => {
 const PORT = process.env.PORT || 7000;
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log(`Addon v1.6.0 running on port ${PORT}`);
+console.log(`Addon v1.7.0 running on port ${PORT}`);
 
 loadMovies();
 loadSeries();
