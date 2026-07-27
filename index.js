@@ -7,9 +7,9 @@ const SERIES_BASE_URL = "https://fmftp.net/data/disk-1/tvseries/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "2.2.0",
+    version: "3.0.0",
     name: "FMFTP Movies & Series",
-    description: "Full Catalog BDIX Streaming Addon",
+    description: "Ultra Fast & Light BDIX Streaming Addon",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     idPrefixes: ["fmftp_", "tt"],
@@ -63,11 +63,11 @@ function cleanTitle(raw) {
 
 async function fetchRealPoster(title, type) {
     if (posterCache.has(title)) return posterCache.get(title);
-    if (posterCache.size > 1000) posterCache.clear();
+    if (posterCache.size > 500) posterCache.clear();
 
     try {
         const clean = cleanTitle(title);
-        const res = await axios.get(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${encodeURIComponent(clean)}.json`, { timeout: 2500 });
+        const res = await axios.get(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${encodeURIComponent(clean)}.json`, { timeout: 2000 });
         if (res.data && res.data.metas && res.data.metas.length > 0 && res.data.metas[0].poster) {
             const posterUrl = res.data.metas[0].poster;
             posterCache.set(title, posterUrl);
@@ -103,7 +103,7 @@ function buildVideoObject(fileUrl, fileName, defaultSeason, defaultEp) {
     };
 }
 
-// মুভি লোডার
+// ১. মুভি স্ক্র্যাপার
 async function loadMovies() {
     if (movieCache.length > 0) return movieCache;
 
@@ -111,7 +111,7 @@ async function loadMovies() {
     for (const cat of movieCategories) {
         try {
             const catUrl = MOVIE_BASE_URL + cat;
-            const response = await axios.get(catUrl, { timeout: 6000 });
+            const response = await axios.get(catUrl, { timeout: 5000 });
             const $ = cheerio.load(response.data);
 
             $("a").each((i, element) => {
@@ -131,7 +131,7 @@ async function loadMovies() {
     return movieCache;
 }
 
-// সেফ টিভি সিরিজ লোডার (মেমোরি নিয়ন্ত্রণ রেখে বেশি ফোল্ডার স্ক্যান)
+// ২. সুপারফাস্ট ও লাইটওয়েট টিভি সিরিজ স্ক্যানার (মাত্র ৮টি রিকোয়েস্টে সব সিরিজ লোড)
 async function loadSeries() {
     if (seriesCache.length > 0) return seriesCache;
 
@@ -141,83 +141,25 @@ async function loadSeries() {
     for (const cat of seriesCategories) {
         try {
             const catUrl = SERIES_BASE_URL + cat;
-            const response = await axios.get(catUrl, { timeout: 6000 });
+            const response = await axios.get(catUrl, { timeout: 5000 });
             const $ = cheerio.load(response.data);
-            const mainFolders = [];
 
             $("a").each((i, el) => {
                 const text = $(el).text().trim();
                 const href = $(el).attr("href");
+
+                // প্রতিটি ক্যাটাগরির ভেতরের ফোল্ডারগুলোই এক একটি সিরিজ
                 if (href && text !== ".." && text !== "." && !href.startsWith("?") && !href.startsWith("/")) {
-                    mainFolders.push(catUrl + href);
+                    const fullUrl = catUrl + href;
+                    const clean = cleanTitle(decodeURIComponent(text));
+                    const id = encodeId(fullUrl);
+
+                    if (!seenMap.has(id) && clean.length > 0) {
+                        seenMap.add(id);
+                        list.push({ id, fullUrl, cleanTitle: clean, rawName: text, type: "series" });
+                    }
                 }
             });
-
-            // ব্যাচ প্রসেসিং: প্রতি ক্যাটাগরি থেকে ফোল্ডারগুলো স্ক্যান করা
-            for (const folderUrl of mainFolders) {
-                try {
-                    const res = await axios.get(folderUrl, { timeout: 3500 });
-                    const $f = cheerio.load(res.data);
-                    let isSeriesFolder = false;
-
-                    // ১. চেক করা এই ফোল্ডারে কি সরাসরি ভিডিও আছে?
-                    $f("a").each((j, el2) => {
-                        const href2 = $f(el2).attr("href");
-                        if (href2 && href2.match(/\.(mp4|mkv|avi|webm)$/i)) {
-                            isSeriesFolder = true;
-                        }
-                    });
-
-                    if (isSeriesFolder) {
-                        const parts = folderUrl.split("/").filter(Boolean);
-                        const seriesName = parts[parts.length - 1];
-                        const clean = cleanTitle(decodeURIComponent(seriesName));
-                        const id = encodeId(folderUrl);
-
-                        if (!seenMap.has(id) && clean.length > 0) {
-                            seenMap.add(id);
-                            list.push({ id, fullUrl: folderUrl, cleanTitle: clean, rawName: seriesName, type: "series" });
-                        }
-                    } else {
-                        // ২. সাব-ফোল্ডারে (যেমন A-D/ বা Season/)-এ লুকানো সিরিজ
-                        const subLinks = [];
-                        $f("a").each((j, el2) => {
-                            const text2 = $f(el2).text().trim();
-                            const href2 = $f(el2).attr("href");
-                            if (href2 && text2 !== ".." && text2 !== "." && !href2.startsWith("?") && !href2.startsWith("/")) {
-                                subLinks.push(folderUrl.endsWith("/") ? folderUrl + href2 : folderUrl + "/" + href2);
-                            }
-                        });
-
-                        for (const subUrl of subLinks) {
-                            try {
-                                const subRes = await axios.get(subUrl, { timeout: 2500 });
-                                const $sub = cheerio.load(subRes.data);
-                                let subIsVideo = false;
-
-                                $sub("a").each((k, el3) => {
-                                    const href3 = $sub(el3).attr("href");
-                                    if (href3 && href3.match(/\.(mp4|mkv|avi|webm)$/i)) {
-                                        subIsVideo = true;
-                                    }
-                                });
-
-                                if (subIsVideo) {
-                                    const parts = subUrl.split("/").filter(Boolean);
-                                    const seriesName = parts[parts.length - 1];
-                                    const clean = cleanTitle(decodeURIComponent(seriesName));
-                                    const id = encodeId(subUrl);
-
-                                    if (!seenMap.has(id) && clean.length > 0) {
-                                        seenMap.add(id);
-                                        list.push({ id, fullUrl: subUrl, cleanTitle: clean, rawName: seriesName, type: "series" });
-                                    }
-                                }
-                            } catch (e) {}
-                        }
-                    }
-                } catch (e) {}
-            }
         } catch (err) {}
     }
 
@@ -225,7 +167,7 @@ async function loadSeries() {
     return seriesCache;
 }
 
-// ক্যাটালগ হ্যান্ডলার
+// ৩. ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
     let list = args.type === "series" ? await loadSeries() : await loadMovies();
 
@@ -250,7 +192,7 @@ builder.defineCatalogHandler(async (args) => {
     return { metas };
 });
 
-// মেটা হ্যান্ডলার
+// ৪. মেটা হ্যান্ডলার (ইউজার যখন সিরিজে ক্লিক করবে তখন লাইভ এপিসোড বের করবে)
 builder.defineMetaHandler(async (args) => {
     const isSeries = args.type === "series";
     const list = isSeries ? await loadSeries() : await loadMovies();
@@ -270,7 +212,7 @@ builder.defineMetaHandler(async (args) => {
     if (isSeries && folderUrl) {
         const videos = [];
         try {
-            const rootRes = await axios.get(folderUrl, { timeout: 4000 });
+            const rootRes = await axios.get(folderUrl, { timeout: 5000 });
             const $ = cheerio.load(rootRes.data);
             const subFolders = [];
             let rootEpCount = 1;
@@ -294,7 +236,7 @@ builder.defineMetaHandler(async (args) => {
                     try {
                         const seasonMatch = sf.name.match(/season\s*(\d+)/i) || sf.name.match(/s(\d+)/i);
                         const sNum = seasonMatch ? parseInt(seasonMatch[1]) : (sfIndex + 1);
-                        const subRes = await axios.get(sf.url, { timeout: 4000 });
+                        const subRes = await axios.get(sf.url, { timeout: 5000 });
                         const $sub = cheerio.load(subRes.data);
                         let subEpCount = 1;
 
@@ -322,7 +264,7 @@ builder.defineMetaHandler(async (args) => {
     return { meta: metaObj };
 });
 
-// স্ট্রিম হ্যান্ডলার
+// ৫. স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
         let streamUrl = "";
