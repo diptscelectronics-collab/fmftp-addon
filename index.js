@@ -7,12 +7,12 @@ const SERIES_BASE_URL = "https://fmftp.net/data/disk-1/tvseries/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "1.2.3",
+    version: "1.3.0",
     name: "FMFTP Movies & Series",
     description: "Fast BDIX Movie & TV Series Streaming Addon",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
-    idPrefixes: ["fmftp_"], 
+    idPrefixes: ["fmftp_", "tt"], // Cinemeta / IMDB ID (tt...) সাপোর্ট দেওয়া হলো
     catalogs: [
         {
             type: "movie",
@@ -62,19 +62,6 @@ function cleanName(raw) {
     return raw.replace(/\//g, "").replace(/\(\d{4}\)/g, "").replace(/\[.*?\]/g, "").trim();
 }
 
-// Cinemeta থেকে আসল পোস্টার ফেচ করার হেলপার ফাংশন
-async function fetchPosterFromCinemeta(title, type) {
-    try {
-        const searchUrl = `https://v3-cinemeta.strem.io/catalog/${type}/top/search=${encodeURIComponent(title)}.json`;
-        const res = await axios.get(searchUrl, { timeout: 2000 });
-        if (res.data && res.data.metas && res.data.metas.length > 0 && res.data.metas[0].poster) {
-            return res.data.metas[0].poster;
-        }
-    } catch (e) {}
-    // ফলব্যাক হিসেবে মেটা পোস্টার সার্ভিস ব্যবহার
-    return `https://v3-cinemeta.strem.io/poster/${type}/${encodeURIComponent(title)}.jpg`;
-}
-
 function buildVideoObject(fileUrl, fileName, defaultSeason, defaultEp) {
     const cleanFileName = fileName.replace(/\.[^/.]+$/, "");
     const sAndE = cleanFileName.match(/s(\d+)e(\d+)/i) || cleanFileName.match(/(\d+)x(\d+)/i);
@@ -104,17 +91,12 @@ async function loadMovies() {
     if (movieMap.size > 0 && (Date.now() - lastMovieCacheTime < 3600000)) {
         return Array.from(movieMap.values());
     }
-    
     try {
-        console.log("Fetching movies from FMFTP...");
         for (const cat of movieCategories) {
             const catUrl = MOVIE_BASE_URL + cat;
             try {
                 const response = await axios.get(catUrl, { timeout: 15000 });
                 const $ = cheerio.load(response.data);
-
-                const itemsToFetch = [];
-
                 $("a").each((i, element) => {
                     const folderName = $(element).text().trim();
                     const folderHref = $(element).attr("href");
@@ -126,29 +108,20 @@ async function loadMovies() {
                             const id = encodeId(fullUrl);
                             const cleanTitle = cleanName(nameClean);
 
-                            itemsToFetch.push({ id, fullUrl, cleanTitle });
+                            movieMap.set(id, {
+                                id: id,
+                                fullUrl: fullUrl,
+                                cleanTitle: cleanTitle,
+                                type: "movie",
+                                poster: `https://v3-cinemeta.strem.io/poster/movie/${encodeURIComponent(cleanTitle)}.jpg`
+                            });
                         }
                     }
                 });
-
-                // ব্যাকগ্রাউন্ডে Cinemeta পোস্টার সহ ম্যাপিং তৈরি
-                for (const item of itemsToFetch) {
-                    const poster = await fetchPosterFromCinemeta(item.cleanTitle, "movie");
-                    movieMap.set(item.id, {
-                        id: item.id,
-                        fullUrl: item.fullUrl,
-                        cleanTitle: item.cleanTitle,
-                        type: "movie",
-                        poster: poster
-                    });
-                }
             } catch (err) {}
         }
         lastMovieCacheTime = Date.now();
-        console.log(`Loaded ${movieMap.size} movies with posters to cache.`);
-    } catch (e) {
-        console.error("Movie Fetch Error:", e.message);
-    }
+    } catch (e) {}
     return Array.from(movieMap.values());
 }
 
@@ -156,17 +129,12 @@ async function loadSeries() {
     if (seriesMap.size > 0 && (Date.now() - lastSeriesCacheTime < 3600000)) {
         return Array.from(seriesMap.values());
     }
-    
     try {
-        console.log("Fetching series from FMFTP...");
         for (const cat of seriesCategories) {
             const catUrl = SERIES_BASE_URL + cat;
             try {
                 const response = await axios.get(catUrl, { timeout: 15000 });
                 const $ = cheerio.load(response.data);
-
-                const itemsToFetch = [];
-
                 $("a").each((i, element) => {
                     const folderName = $(element).text().trim();
                     const folderHref = $(element).attr("href");
@@ -178,38 +146,26 @@ async function loadSeries() {
                             const id = encodeId(fullUrl);
                             const cleanTitle = cleanName(nameClean);
 
-                            itemsToFetch.push({ id, fullUrl, cleanTitle });
+                            seriesMap.set(id, {
+                                id: id,
+                                fullUrl: fullUrl,
+                                cleanTitle: cleanTitle,
+                                type: "series",
+                                poster: `https://v3-cinemeta.strem.io/poster/series/${encodeURIComponent(cleanTitle)}.jpg`
+                            });
                         }
                     }
                 });
-
-                for (const item of itemsToFetch) {
-                    const poster = await fetchPosterFromCinemeta(item.cleanTitle, "series");
-                    seriesMap.set(item.id, {
-                        id: item.id,
-                        fullUrl: item.fullUrl,
-                        cleanTitle: item.cleanTitle,
-                        type: "series",
-                        poster: poster
-                    });
-                }
             } catch (err) {}
         }
         lastSeriesCacheTime = Date.now();
-        console.log(`Loaded ${seriesMap.size} TV series with posters to cache.`);
-    } catch (e) {
-        console.error("Series Fetch Error:", e.message);
-    }
+    } catch (e) {}
     return Array.from(seriesMap.values());
 }
 
 // ১. ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
-    let list = args.type === "series" ? Array.from(seriesMap.values()) : Array.from(movieMap.values());
-
-    if (list.length === 0) {
-        list = args.type === "series" ? await loadSeries() : await loadMovies();
-    }
+    let list = args.type === "series" ? await loadSeries() : await loadMovies();
 
     if (args.extra && args.extra.search) {
         const query = args.extra.search.toLowerCase().trim();
@@ -217,52 +173,43 @@ builder.defineCatalogHandler(async (args) => {
     }
 
     const skip = args.extra && args.extra.skip ? parseInt(args.extra.skip) : 0;
-    const limit = 30; 
-    const paginatedList = list.slice(skip, skip + limit);
+    const paginatedList = list.slice(skip, skip + 30);
 
-    const metas = paginatedList.map((m) => {
-        return {
-            id: m.id,
-            type: m.type,
-            name: m.cleanTitle,
-            poster: m.poster,
-            posterShape: "poster"
-        };
-    });
+    const metas = paginatedList.map((m) => ({
+        id: m.id,
+        type: m.type,
+        name: m.cleanTitle,
+        poster: m.poster,
+        posterShape: "poster"
+    }));
 
     return { metas: metas };
 });
 
-// ২. মেটা হ্যান্ডলার 
+// ২. মেটা হ্যান্ডলার
 builder.defineMetaHandler(async (args) => {
     const isSeries = args.type === "series";
     let item = isSeries ? seriesMap.get(args.id) : movieMap.get(args.id);
-    
     let title = "Item";
-    let poster = "";
     let folderUrl = "";
 
     if (item) {
         title = item.cleanTitle;
-        poster = item.poster;
         folderUrl = item.fullUrl;
     } else {
         folderUrl = decodeId(args.id);
         const pathParts = folderUrl.split("/").filter(Boolean);
         const rawName = decodeURIComponent(pathParts[pathParts.length - 1] || "Item");
         title = cleanName(rawName);
-        poster = await fetchPosterFromCinemeta(title, isSeries ? "series" : "movie");
     }
 
     const metaObj = {
         id: args.id,
         type: args.type,
         name: title,
-        genres: ["BDIX Stream", isSeries ? "TV Series" : "Movies"],
-        poster: poster,
-        posterShape: "poster",
-        background: poster,
-        description: `Direct High-Speed BDIX Stream from FMFTP Server.\n\nTitle: ${title}`
+        genres: ["BDIX Stream"],
+        poster: `https://v3-cinemeta.strem.io/poster/${args.type}/${encodeURIComponent(title)}.jpg`,
+        posterShape: "poster"
     };
 
     if (isSeries && folderUrl) {
@@ -270,7 +217,6 @@ builder.defineMetaHandler(async (args) => {
         try {
             const rootRes = await axios.get(folderUrl, { timeout: 5000 });
             const $ = cheerio.load(rootRes.data);
-            
             const subFolders = [];
             let rootEpCount = 1;
 
@@ -279,7 +225,6 @@ builder.defineMetaHandler(async (args) => {
                 const name = $(el).text().trim();
                 if (href && name !== ".." && name !== "." && !href.startsWith("?") && !href.startsWith("/")) {
                     const fullHref = folderUrl.endsWith("/") ? folderUrl + href : folderUrl + "/" + href;
-                    
                     if (href.match(/\.(mp4|mkv|avi|webm)$/i)) {
                         videos.push(buildVideoObject(fullHref, name, 1, rootEpCount++));
                     } else if (href.endsWith("/") || !href.includes(".")) {
@@ -293,7 +238,6 @@ builder.defineMetaHandler(async (args) => {
                     try {
                         const seasonMatch = sf.name.match(/season\s*(\d+)/i) || sf.name.match(/s(\d+)/i);
                         const sNum = seasonMatch ? parseInt(seasonMatch[1]) : (sfIndex + 1);
-                        
                         const subRes = await axios.get(sf.url, { timeout: 5000 });
                         const $sub = cheerio.load(subRes.data);
                         let subEpCount = 1;
@@ -316,50 +260,65 @@ builder.defineMetaHandler(async (args) => {
                 videos.sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
                 metaObj.videos = videos;
             }
-        } catch (err) {
-            console.error("Error parsing series episodes:", err.message);
-        }
+        } catch (err) {}
     }
 
     return { meta: metaObj };
 });
 
-// ৩. স্ট্রিম হ্যান্ডলার
+// ৩. স্মার্ট স্ট্রিম হ্যান্ডলার (IMDB ID এবং Custom ID উভয়ই হ্যান্ডেল করবে)
 builder.defineStreamHandler(async (args) => {
     try {
-        const decodedUrl = decodeId(args.id);
-        if (!decodedUrl) return { streams: [] };
+        let streamUrl = "";
+        let searchTitle = "";
 
-        if (decodedUrl.match(/\.(mp4|mkv|avi|webm)$/i)) {
+        // ১. যদি IMDB ID (tt123456) পাঠায় (Search রেজাল্টের পেজ থেকে ঢুকলে)
+        if (args.id.startsWith("tt")) {
+            const imdbId = args.id.split(":")[0]; // tt1234567:1:1 থেকে মূল IMDB ID বের করা
+            
+            // Cinemeta থেকে IMDB আইডি দিয়ে সিনেমার আসল নাম বের করা
+            const metaRes = await axios.get(`https://v3-cinemeta.strem.io/meta/${args.type}/${imdbId}.json`, { timeout: 3000 });
+            if (metaRes.data && metaRes.data.meta && metaRes.data.meta.name) {
+                searchTitle = metaRes.data.meta.name.toLowerCase();
+            }
+
+            if (searchTitle) {
+                const list = args.type === "series" ? await loadSeries() : await loadMovies();
+                // FMFTP মেমোরি থেকে শিরোনামের সাথে মেলাক
+                const matchedItem = list.find(m => m.cleanTitle.toLowerCase().includes(searchTitle) || searchTitle.includes(m.cleanTitle.toLowerCase()));
+                if (matchedItem) {
+                    streamUrl = matchedItem.fullUrl;
+                }
+            }
+        } else {
+            // ২. যদি FMFTP-এর নিজস্ব আইডি পাঠায়
+            streamUrl = decodeId(args.id);
+        }
+
+        if (!streamUrl) return { streams: [] };
+
+        // সরাসরি ভিডিও ফাইল হলে
+        if (streamUrl.match(/\.(mp4|mkv|avi|webm)$/i)) {
             return {
-                streams: [
-                    {
-                        title: "▶ Play Episode on FMFTP (BDIX Speed)",
-                        url: decodedUrl
-                    }
-                ]
+                streams: [{ title: "▶ Play on FMFTP (BDIX Speed)", url: streamUrl }]
             };
         }
 
-        const response = await axios.get(decodedUrl, { timeout: 10000 });
+        // ফোল্ডার হলে ভিডিও ফাইলটি স্ক্র্যাপ করা
+        const response = await axios.get(streamUrl, { timeout: 5000 });
         const $ = cheerio.load(response.data);
         let videoLink = "";
 
         $("a").each((i, element) => {
             const href = $(element).attr("href");
-            if (href && (href.match(/\.(mp4|mkv|avi|webm)$/i))) {
-                videoLink = decodedUrl + href;
+            if (href && href.match(/\.(mp4|mkv|avi|webm)$/i)) {
+                videoLink = streamUrl.endsWith("/") ? streamUrl + href : streamUrl + "/" + href;
             }
         });
 
         if (videoLink) {
             return {
-                streams: [
-                    {
-                        title: "▶ Play Movie on FMFTP (BDIX Speed)",
-                        url: videoLink
-                    }
-                ]
+                streams: [{ title: "▶ Play on FMFTP (BDIX Speed)", url: videoLink }]
             };
         }
     } catch (error) {}
@@ -367,12 +326,10 @@ builder.defineStreamHandler(async (args) => {
     return { streams: [] };
 });
 
-// সার্ভার স্টার্ট
 const PORT = process.env.PORT || 7000;
 serveHTTP(builder.getInterface(), { port: PORT });
 
-console.log(`Addon running at http://localhost:${PORT}/manifest.json`);
+console.log(`Addon v1.3.0 running at http://localhost:${PORT}/manifest.json`);
 
-// ব্যাকগ্রাউন্ড ইনডেক্সিং শুরু
 loadMovies();
 loadSeries();
