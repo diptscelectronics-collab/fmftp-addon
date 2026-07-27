@@ -7,9 +7,9 @@ const SERIES_BASE_URL = "https://fmftp.net/data/disk-1/tvseries/";
 
 const manifest = {
     id: "org.fmftp.allmovies.nuvio",
-    version: "2.1.0",
+    version: "2.2.0",
     name: "FMFTP Movies & Series",
-    description: "Memory Optimized BDIX Streaming Addon",
+    description: "Full Catalog BDIX Streaming Addon",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     idPrefixes: ["fmftp_", "tt"],
@@ -34,7 +34,6 @@ const builder = new addonBuilder(manifest);
 const movieCategories = ["hindidub/", "bollywood/", "hollywood/"];
 const seriesCategories = ["1/", "Bangla/", "English/", "Indian/", "Turkish/", "abcd/", "korean/", "new/"];
 
-// মেমোরি ক্লিয়ার রাখার জন্য ক্যাশ অবজেক্ট
 let movieCache = [];
 let seriesCache = [];
 let posterCache = new Map();
@@ -62,16 +61,13 @@ function cleanTitle(raw) {
         .trim();
 }
 
-// মেমোরি সাশ্রয়ী পোস্টার জেনারেটর
 async function fetchRealPoster(title, type) {
     if (posterCache.has(title)) return posterCache.get(title);
-
-    // পোস্টার ক্যাশ ৫০০টির বেশি হলে পুরনো ডাটা মুছে ফেলা (RAM সেভ করতে)
-    if (posterCache.size > 500) posterCache.clear();
+    if (posterCache.size > 1000) posterCache.clear();
 
     try {
         const clean = cleanTitle(title);
-        const res = await axios.get(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${encodeURIComponent(clean)}.json`, { timeout: 2000 });
+        const res = await axios.get(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${encodeURIComponent(clean)}.json`, { timeout: 2500 });
         if (res.data && res.data.metas && res.data.metas.length > 0 && res.data.metas[0].poster) {
             const posterUrl = res.data.metas[0].poster;
             posterCache.set(title, posterUrl);
@@ -107,7 +103,7 @@ function buildVideoObject(fileUrl, fileName, defaultSeason, defaultEp) {
     };
 }
 
-// ১. হালকা ও দ্রুত মুভি স্ক্র্যাপার
+// মুভি লোডার
 async function loadMovies() {
     if (movieCache.length > 0) return movieCache;
 
@@ -115,7 +111,7 @@ async function loadMovies() {
     for (const cat of movieCategories) {
         try {
             const catUrl = MOVIE_BASE_URL + cat;
-            const response = await axios.get(catUrl, { timeout: 5000 });
+            const response = await axios.get(catUrl, { timeout: 6000 });
             const $ = cheerio.load(response.data);
 
             $("a").each((i, element) => {
@@ -135,7 +131,7 @@ async function loadMovies() {
     return movieCache;
 }
 
-// ২. মেমোরি-সেফ হালকা ডিরেক্টরি স্ক্র্যাপার (Non-Recursive Batching)
+// সেফ টিভি সিরিজ লোডার (মেমোরি নিয়ন্ত্রণ রেখে বেশি ফোল্ডার স্ক্যান)
 async function loadSeries() {
     if (seriesCache.length > 0) return seriesCache;
 
@@ -145,45 +141,81 @@ async function loadSeries() {
     for (const cat of seriesCategories) {
         try {
             const catUrl = SERIES_BASE_URL + cat;
-            const response = await axios.get(catUrl, { timeout: 5000 });
+            const response = await axios.get(catUrl, { timeout: 6000 });
             const $ = cheerio.load(response.data);
-            const subFolders = [];
+            const mainFolders = [];
 
             $("a").each((i, el) => {
                 const text = $(el).text().trim();
                 const href = $(el).attr("href");
                 if (href && text !== ".." && text !== "." && !href.startsWith("?") && !href.startsWith("/")) {
-                    subFolders.push(catUrl + href);
+                    mainFolders.push(catUrl + href);
                 }
             });
 
-            // ১-লেভেল গভীরে গিয়ে চেক করা (RAM সেভ রাখার জন্য)
-            for (const subUrl of subFolders.slice(0, 40)) { // প্রতি ক্যাটাগরি থেকে লিমিটেড ফোল্ডার
+            // ব্যাচ প্রসেসিং: প্রতি ক্যাটাগরি থেকে ফোল্ডারগুলো স্ক্যান করা
+            for (const folderUrl of mainFolders) {
                 try {
-                    const subRes = await axios.get(subUrl, { timeout: 3000 });
-                    const $sub = cheerio.load(subRes.data);
+                    const res = await axios.get(folderUrl, { timeout: 3500 });
+                    const $f = cheerio.load(res.data);
+                    let isSeriesFolder = false;
 
-                    $sub("a").each((j, el2) => {
-                        const href2 = $sub(el2).attr("href");
-                        const text2 = $sub(el2).text().trim();
-
-                        if (href2 && text2 !== ".." && text2 !== "." && !href2.startsWith("?")) {
-                            const fullPath = subUrl.endsWith("/") ? subUrl + href2 : subUrl + "/" + href2;
-
-                            // যদি ভিডিও ফাইল থাকে তবে মূল ফোল্ডারকে সিরিজ ধরবো
-                            if (href2.match(/\.(mp4|mkv|avi|webm)$/i)) {
-                                const parts = subUrl.split("/").filter(Boolean);
-                                const seriesName = parts[parts.length - 1];
-                                const clean = cleanTitle(decodeURIComponent(seriesName));
-                                const id = encodeId(subUrl);
-
-                                if (!seenMap.has(id) && clean.length > 0) {
-                                    seenMap.add(id);
-                                    list.push({ id, fullUrl: subUrl, cleanTitle: clean, rawName: seriesName, type: "series" });
-                                }
-                            }
+                    // ১. চেক করা এই ফোল্ডারে কি সরাসরি ভিডিও আছে?
+                    $f("a").each((j, el2) => {
+                        const href2 = $f(el2).attr("href");
+                        if (href2 && href2.match(/\.(mp4|mkv|avi|webm)$/i)) {
+                            isSeriesFolder = true;
                         }
                     });
+
+                    if (isSeriesFolder) {
+                        const parts = folderUrl.split("/").filter(Boolean);
+                        const seriesName = parts[parts.length - 1];
+                        const clean = cleanTitle(decodeURIComponent(seriesName));
+                        const id = encodeId(folderUrl);
+
+                        if (!seenMap.has(id) && clean.length > 0) {
+                            seenMap.add(id);
+                            list.push({ id, fullUrl: folderUrl, cleanTitle: clean, rawName: seriesName, type: "series" });
+                        }
+                    } else {
+                        // ২. সাব-ফোল্ডারে (যেমন A-D/ বা Season/)-এ লুকানো সিরিজ
+                        const subLinks = [];
+                        $f("a").each((j, el2) => {
+                            const text2 = $f(el2).text().trim();
+                            const href2 = $f(el2).attr("href");
+                            if (href2 && text2 !== ".." && text2 !== "." && !href2.startsWith("?") && !href2.startsWith("/")) {
+                                subLinks.push(folderUrl.endsWith("/") ? folderUrl + href2 : folderUrl + "/" + href2);
+                            }
+                        });
+
+                        for (const subUrl of subLinks) {
+                            try {
+                                const subRes = await axios.get(subUrl, { timeout: 2500 });
+                                const $sub = cheerio.load(subRes.data);
+                                let subIsVideo = false;
+
+                                $sub("a").each((k, el3) => {
+                                    const href3 = $sub(el3).attr("href");
+                                    if (href3 && href3.match(/\.(mp4|mkv|avi|webm)$/i)) {
+                                        subIsVideo = true;
+                                    }
+                                });
+
+                                if (subIsVideo) {
+                                    const parts = subUrl.split("/").filter(Boolean);
+                                    const seriesName = parts[parts.length - 1];
+                                    const clean = cleanTitle(decodeURIComponent(seriesName));
+                                    const id = encodeId(subUrl);
+
+                                    if (!seenMap.has(id) && clean.length > 0) {
+                                        seenMap.add(id);
+                                        list.push({ id, fullUrl: subUrl, cleanTitle: clean, rawName: seriesName, type: "series" });
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                    }
                 } catch (e) {}
             }
         } catch (err) {}
@@ -193,7 +225,7 @@ async function loadSeries() {
     return seriesCache;
 }
 
-// ৩. ক্যাটালগ হ্যান্ডলার
+// ক্যাটালগ হ্যান্ডলার
 builder.defineCatalogHandler(async (args) => {
     let list = args.type === "series" ? await loadSeries() : await loadMovies();
 
@@ -218,7 +250,7 @@ builder.defineCatalogHandler(async (args) => {
     return { metas };
 });
 
-// ৪. মেটা হ্যান্ডলার
+// মেটা হ্যান্ডলার
 builder.defineMetaHandler(async (args) => {
     const isSeries = args.type === "series";
     const list = isSeries ? await loadSeries() : await loadMovies();
@@ -290,7 +322,7 @@ builder.defineMetaHandler(async (args) => {
     return { meta: metaObj };
 });
 
-// ৫. স্ট্রিম হ্যান্ডলার
+// স্ট্রিম হ্যান্ডলার
 builder.defineStreamHandler(async (args) => {
     try {
         let streamUrl = "";
